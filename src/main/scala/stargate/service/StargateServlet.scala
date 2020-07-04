@@ -318,9 +318,7 @@ class StargateServlet(
 
     def wrapResponse(o: Object) = Map((keywords.response.DATA, o))
     val result: Future[Object] = op match {
-      case "GET" =>
-        val result = query.untyped.getAndTruncate(model, entity, payloadMap.get, sgConfig.defaultLimit, sgConfig.defaultTTL, cqlSession, executor)
-        cacheStreams(result)
+      case "GET"    => cacheStreams(crud.getAndTruncate(entity, payloadMap.get, sgConfig.defaultLimit, sgConfig.defaultTTL))
       case "POST"   => crud.create(entity, payload).map(wrapResponse)(executor)
       case "PUT"    => crud.update(entity, payloadMap.get).map(wrapResponse)(executor)
       case "DELETE" => crud.delete(entity, payloadMap.get).map(wrapResponse)(executor)
