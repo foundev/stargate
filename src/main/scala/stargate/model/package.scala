@@ -193,4 +193,23 @@ package object model {
       }
     }
   }
+
+  object Mode extends Enumeration {
+    val SINGLE = Value("single")
+    val BATCH = Value("batch")
+    val TRANSACTION = Value("transaction")
+    val names = stargate.util.enumerationNames(this)
+
+    def fromString(name: String) = names(name)
+
+    // TODO: should also do input model => output model conversion here to avoid mismatch between OutputModel type and mode passed in
+    def crud(mode: Value, model: OutputModel, session: CqlSession, executor: ExecutionContext): CRUD = {
+      mode match {
+        case SINGLE => unbatchedCRUD(model, session, executor)
+        case BATCH => batchedCRUD(model, session, executor)
+        case TRANSACTION => rampCRUD(model, session, executor)
+        case _ => throw new RuntimeException(s"invalid query mode: ${mode}")
+      }
+    }
+  }
 }

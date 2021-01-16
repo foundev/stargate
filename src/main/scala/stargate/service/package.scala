@@ -124,6 +124,7 @@ package object service {
     val executor = ExecutionContext.global
     val datamodelRepoTable: cassandra.CassandraTable = datamodelRepository.createDatamodelRepoTable(sgConfig, cqlSession, executor)
     val namespaces = new Namespaces(datamodelRepoTable, cqlSession)
+    namespaces.reload(cqlSession, executor)
     var server: Server = null
     //val server = new Server(sgConfig.httpPort)
     if (sgConfig.auth.getSsl()){

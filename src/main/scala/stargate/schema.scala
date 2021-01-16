@@ -197,7 +197,7 @@ object schema {
     (entityTables, _relationTables)
   }
 
-  def outputModel(model: InputModel, keyspace: String, minPartitions: Long = 1000): OutputModel = {
+  def defaultOutputModel(model: InputModel, keyspace: String, minPartitions: Long = 1000): OutputModel = {
     val (entityTables, relationTables) = modelTables(model, keyspace, minPartitions)
     OutputModel(model, entityTables, relationTables, null)
   }
@@ -206,6 +206,15 @@ object schema {
     val (entityTables, relationTables) = modelTables(model, keyspace, minPartitions)
     val transactionTable = transactionStateTable(keyspace)
     OutputModel(model, entityTables.view.mapValues(_.map(rampTable)).toMap, relationTables.view.mapValues(rampTable).toMap, transactionTable)
+  }
+
+  def outputModel(model: InputModel, keyspace: String, mode: Mode.Value, minPartitions: Long = 1000): OutputModel = {
+    mode match {
+      case Mode.SINGLE => defaultOutputModel(model, keyspace, minPartitions)
+      case Mode.BATCH => defaultOutputModel(model, keyspace, minPartitions)
+      case Mode.TRANSACTION => rampOutputModel(model, keyspace, minPartitions)
+      case _ => throw new RuntimeException(s"invalid query mode: ${mode}")
+    }
   }
 
 }

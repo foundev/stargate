@@ -25,7 +25,7 @@ import io.swagger.v3.oas.models.parameters.{PathParameter, QueryParameter, Reque
 import io.swagger.v3.oas.models.responses.{ApiResponse, ApiResponses}
 import io.swagger.v3.oas.models.{OpenAPI, Operation, PathItem, Paths}
 import stargate.cassandra.CassandraTable
-import stargate.model.{OutputModel, generator}
+import stargate.model.{CRUD, Mode, OutputModel, generator}
 import stargate.util
 
 import scala.collection.mutable
@@ -41,27 +41,30 @@ extends LazyLogging{
   //I thought about making these the same map with a compound type, but for purposes of cleaness I decided to go ahead
   //and keep them separate..if someone prefers later go ahead and use a ConcurrentHashMap and 
   //put OutputModel and Swagger together
-  private val namespaces = scala.collection.mutable.Map[String, OutputModel]()
+  private val namespaces = scala.collection.mutable.Map[String, (OutputModel, CRUD)]()
   private val swaggerInstances = scala.collection.mutable.Map[String, OpenAPI]()
   private val lock = new ReentrantReadWriteLock()
-  try{
-    lock.writeLock().lock()
-    // reload previous datamodels
-    Await.result(datamodelRepository.fetchAllLatestDatamodels(datamodelRepoTable, cqlSession, ExecutionContext.global), Duration.Inf).foreach(name_config => {
-      logger.info(s"reloading datamodel from cassandra: ${name_config._1}")
-      val maybeModel = Try(stargate.schema.outputModel(stargate.model.parser.parseModel(name_config._2), name_config._1))
-      if(maybeModel.isSuccess) {
-        namespaces(name_config._1) = maybeModel.get
-      } else {
-        logger.error(s"failed to load model${name_config._1}: ", maybeModel.failed.get)
-      }
-    })
-    //load all the previous models as swagger configuration
-    namespaces.foreach(f=>{
-    swaggerInstances.put(f._1, toSwagger(f._1, f._2))
-   })
-  }finally{
-   lock.writeLock().unlock()
+
+  def reload(session: CqlSession, executor: ExecutionContext): Unit = {
+    try {
+      lock.writeLock ().lock ()
+      // reload previous datamodels
+      Await.result (datamodelRepository.fetchAllLatestDatamodels (datamodelRepoTable, cqlSession, ExecutionContext.global), Duration.Inf).foreach (name_config => {
+        val (name, (configString, mode)) = name_config
+        logger.info (s"reloading datamodel from cassandra: ${name}")
+        val maybeModel = Try (stargate.schema.outputModel(stargate.model.parser.parseModel (configString), name, mode) )
+        if (maybeModel.isSuccess) {
+          val crud = Mode.crud(mode, maybeModel.get, session, executor)
+          namespaces (name_config._1) = (maybeModel.get, crud)
+        } else {
+          logger.error (s"failed to load model${name_config._1}: ", maybeModel.failed.get)
+        }
+      })
+      //load all the previous models as swagger configuration
+      namespaces.foreach (f => swaggerInstances.put(f._1, toSwagger(f._1, f._2._1)))
+    } finally {
+      lock.writeLock ().unlock ()
+    }
   }
 
   private def toSwagger(name: String, outputModel: OutputModel): OpenAPI = {
@@ -270,7 +273,7 @@ extends LazyLogging{
     pathItems.toList
   }
 
-  def get(key: String): OutputModel = {
+  def get(key: String): (OutputModel, CRUD) = {
     try{
       lock.readLock().lock()
       namespaces(key)
@@ -289,10 +292,10 @@ extends LazyLogging{
     }
   }
 
-  def put(key: String, outputModel: OutputModel) = {
+  def put(key: String, outputModel: OutputModel, crud: CRUD) = {
     try{
       lock.writeLock().lock()
-      namespaces.put(key, outputModel)
+      namespaces.put(key, (outputModel, crud))
       swaggerInstances.put(key, toSwagger(key, outputModel))
     } finally {
       lock.writeLock().unlock()

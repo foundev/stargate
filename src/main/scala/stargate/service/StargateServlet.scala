@@ -23,7 +23,7 @@ import com.swrve.ratelimitedlogger.RateLimitedLog
 import com.typesafe.scalalogging.LazyLogging
 import javax.servlet.http.{HttpServlet, HttpServletRequest, HttpServletResponse}
 import stargate.cassandra.CassandraTable
-import stargate.model.{OutputModel, ScalarComparison, generator, queries}
+import stargate.model.{CRUD, Mode, OutputModel, ScalarComparison, generator, queries}
 import stargate.query.pagination.{StreamEntry, Streams, TruncateResult}
 import stargate.service.config.StargateConfig
 import stargate.service.metrics.RequestCollector
@@ -76,8 +76,9 @@ class StargateServlet(
           op match {
             case "DELETE" => deleteSchema(namespace, resp)
             case "POST" =>
+              val mode: Mode.Value = Option(req.getParameter("mode")).map(Mode.fromString).getOrElse(Mode.BATCH)
               http.validateHoconHeader(req)
-              postSchema(namespace, input, resp)
+              postSchema(namespace, input, mode, resp)
             case _ =>
               resp.setStatus(HttpServletResponse.SC_NOT_FOUND)
               rateLimitedLog.warn(s"invalid method '$op' for schema operations")
@@ -162,7 +163,7 @@ class StargateServlet(
    *
    * @param namespace needs to reference an already created namespace via postSchema or stored in the database.:w
    */
-  def lookupModel(namespace: String): OutputModel = {
+  def lookupModel(namespace: String): (OutputModel, CRUD) = {
     val model = this.apps.get(namespace)
     require(model != null, s"invalid database name: $namespace")
     model
@@ -177,21 +178,22 @@ class StargateServlet(
     * @param input the schema payload in the Stargate hocon format.
     * @param response HttpServletResponse object to set content to application/json and write back the newly created namespace object.
     */
-  def postSchema(namespace: String, input: String, response: HttpServletResponse): Unit = {
-    val model = stargate.schema.outputModel(stargate.model.parser.parseModel(input), namespace)
+  def postSchema(namespace: String, input: String, mode: Mode.Value, response: HttpServletResponse): Unit = {
+    val model = stargate.schema.outputModel(stargate.model.parser.parseModel(input), namespace, mode)
+    val crud = Mode.crud(mode, model, cqlSession, executor)
     //retrieving previousDatamodel to see if we can reuse it
     val previousDatamodel =
       util.await(datamodelRepository.fetchLatestDatamodel(namespace, datamodelRepoTable, cqlSession, executor)).get
-    if (!previousDatamodel.contains(input)) {
+    if (!previousDatamodel.map(_._1).contains(input)) {
       logger.info(s"""creating keyspace "$namespace" for new datamodel""")
-      datamodelRepository.updateDatamodel(namespace, input, datamodelRepoTable, cqlSession, executor)
+      datamodelRepository.updateDatamodel(namespace, input, mode, datamodelRepoTable, cqlSession, executor)
       cassandra.recreateKeyspace(cqlSession, namespace, sgConfig.cassandra.cassandraReplication)
       Await.result(model.createTables(cqlSession, executor), Duration.Inf)
     } else {
       logger.info(s"""reusing existing keyspace "$namespace" with latest datamodel""")
     }
     //store the namespace and retrieve the newly created object then return it back to the user for validation.:w
-    val namespaceObj = apps.put(namespace, model)
+    val namespaceObj = apps.put(namespace, model, crud)
     response.setContentType("application/json")
     response.getWriter.write(util.toJson(namespaceObj))
   }
@@ -216,7 +218,7 @@ class StargateServlet(
   }
 
   def generateQuery(appName: String, entity: String, op: String, resp: HttpServletResponse): Unit = {
-    val model = lookupModel(appName)
+    val model = lookupModel(appName)._1
     require(model.input.entities.contains(entity), s"""database "$appName" does not have an entity named "$entity" """)
     val validOps = Set("create", "get", "update", "delete")
     require(requirement = validOps.contains(op), message = s"operation $op must be one of the following: $validOps")
@@ -232,11 +234,12 @@ class StargateServlet(
   }
 
   def runPredefinedQuery(appName: String, queryName: String, input: String, resp: HttpServletResponse): Unit = {
-    val model = lookupModel(appName)
+    val model = lookupModel(appName)._1
     val payloadMap = util.fromJson(input).asInstanceOf[Map[String, Object]]
     val query = Try(model.input.queries(queryName))
     require(query.isSuccess, s"""no such query "$queryName" for database "$appName" """)
     val runtimePayload = queries.predefined.transform(query.get, payloadMap)
+    // TODO: only works for non-transactional schemas, should probably scrap this feature
     val result = stargate.query.getAndTruncate(
       stargate.query.Context(model, cqlSession, executor),
       query.get.entityName,
@@ -283,7 +286,7 @@ class StargateServlet(
    * @param resp HttpServletResponse to write out the result too
    */
   def continueQuery(namespace: String, continueId: UUID, resp: HttpServletResponse): Unit = {
-    val model = lookupModel(namespace)
+    val model = lookupModel(namespace)._1
     val continue_cleanup = continuationCache.remove(continueId)
     require(continue_cleanup != null, s"""no continuable query found for id $continueId in database "$namespace" """)
     val (entry, cleanup) = continue_cleanup
@@ -310,8 +313,7 @@ class StargateServlet(
   }
 
   def runQuery(appName: String, entity: String, op: String, payload: Object, resp: HttpServletResponse): Unit = {
-    val model = lookupModel(appName)
-    val crud = stargate.model.unbatchedCRUD(model, cqlSession, executor)
+    val (model, crud) = lookupModel(appName)
     require(model.input.entities.contains(entity), s"""database "$appName" does not have an entity named "$entity" """)
     val payloadMap = Try(payload.asInstanceOf[Map[String, Object]])
     logger.trace(s"query payload: $payload")

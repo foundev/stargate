@@ -47,4 +47,6 @@ object MergedServletTest extends CassandraTest {
 
 class MergedServletTest extends QueryServletTest with StargateServletTest with SwaggerServletTest {
 
-  override def registerKeyspace(keyspace: String): String = MergedServletTest.registerKeyspace(keyspace) }
+  override def registerKeyspace(keyspace: String): String = MergedServletTest.registerKeyspace(keyspace)
+
+}

@@ -41,7 +41,7 @@ trait NullKeysTestTrait extends CassandraTestSession {
   def testNullKey: Unit = {
     val executor = ExecutionContext.global
     val keyspace = this.newKeyspace()
-    val model = schema.outputModel(stargate.model.parser.parseModel(ConfigFactory.parseResources("optional-keys.conf")), keyspace)
+    val model = schema.defaultOutputModel(stargate.model.parser.parseModel(ConfigFactory.parseResources("optional-keys.conf")), keyspace)
     val crud = stargate.model.unbatchedCRUD(model, this.session, executor)
     val viewTable = model.entityTables("foo").filter(t => t.name != schema.baseTableName("foo")).head
     val keys = viewTable.columns.key.names.combined

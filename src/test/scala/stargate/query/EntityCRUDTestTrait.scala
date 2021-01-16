@@ -25,11 +25,11 @@ import org.junit.Assert._
 import org.junit.Test
 import stargate.model._
 import stargate.schema.ENTITY_ID_COLUMN_NAME
-import stargate.{CassandraTestSession, keywords, query, schema, util}
+import stargate.{CassandraTestSession, cassandra, keywords, query, schema, util}
 
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContext, Future}
-import scala.util.Random
+import scala.util.{Random, Try}
 
 
 trait EntityCRUDTestTrait extends CassandraTestSession {
@@ -180,7 +180,7 @@ trait EntityCRUDTestTrait extends CassandraTestSession {
   def crudTest: Unit = {
     val inputModel = parser.parseModel(ConfigFactory.parseResources("schema.conf"))
     val keyspace = newKeyspace()
-    val model = stargate.schema.outputModel(inputModel, keyspace)
+    val model = stargate.schema.defaultOutputModel(inputModel, keyspace)
     util.await(model.createTables(session, executor)).get
     val crud = stargate.model.unbatchedCRUD(model, this.session, executor)
     crudTest(model, crud, executor)
@@ -190,7 +190,7 @@ trait EntityCRUDTestTrait extends CassandraTestSession {
   def batchedCrudTest: Unit = {
     val inputModel = parser.parseModel(ConfigFactory.parseResources("schema.conf"))
     val keyspace = newKeyspace()
-    val model = stargate.schema.outputModel(inputModel, keyspace)
+    val model = stargate.schema.defaultOutputModel(inputModel, keyspace)
     util.await(model.createTables(session, executor)).get
     val crud = stargate.model.batchedCRUD(model, this.session, executor)
     crudTest(model, crud, executor)
@@ -204,13 +204,19 @@ trait EntityCRUDTestTrait extends CassandraTestSession {
     val model = stargate.schema.rampOutputModel(inputModel, keyspace)
     util.await(model.createRampTables(session, executor)).get
     val crud = stargate.model.rampCRUD(model, this.session, executor)
-    crudTest(model, crud, executor)
+    EntityCRUDTestTrait.session = this.session
+    EntityCRUDTestTrait.keyspace = keyspace
+    val t = Try(crudTest(model, crud, executor))
+    if(t.isFailure) logger.error("failed", t.failed.get)
+    t.get
   }
 }
 
 object EntityCRUDTestTrait {
 
   val executor: ExecutionContext = ExecutionContext.global
+  var session: CqlSession = _
+  var keyspace: String = _
 
   def create(model: OutputModel, crud: CRUD, entityName: String, executor: ExecutionContext): (Map[String,Object], Future[Map[String,Object]]) = {
     val request = stargate.model.generator.createEntity(model.input.entities, entityName)
@@ -260,7 +266,12 @@ object EntityCRUDTestTrait {
     getEntities(model, crud, entityName, getRequestByEntityId(model, entityName, entityId), executor)
   }
   def getEntity(model: InputModel, crud: CRUD, entityName: String, entityId: UUID, executor: ExecutionContext): Future[Map[String,Object]] = {
-    getEntities(model, crud, entityName, entityId, executor).map(list => {assert(list.length == 1); list(0)})(executor)
+    import scala.jdk.CollectionConverters._
+    getEntities(model, crud, entityName, entityId, executor).map(list => {
+      assert(list.length == 1,
+        entityId.toString + "\n" +
+        session.execute(s"""select * from ${keyspace}."${entityName}" """).iterator.asScala.toList.map(cassandra.rowToMap).mkString("\n"))
+      list(0)})(executor)
   }
   def getAllEntities(model: InputModel, crud: CRUD, entityName: String, executor: ExecutionContext): Future[List[Map[String,Object]]] = {
     getEntities(model, crud, entityName, getRequestRelations(model, entityName, Set(entityName)).updated(stargate.keywords.mutation.MATCH, "all"), executor)

@@ -31,7 +31,7 @@ trait PredefinedQueryTestTrait extends CassandraTestSession {
   def predefinedQueryTest: Unit = {
     val inputModel = parser.parseModel(ConfigFactory.parseResources("predefined-query-schema.conf"))
     val keyspace = newKeyspace()
-    val model = stargate.schema.outputModel(inputModel, keyspace)
+    val model = stargate.schema.defaultOutputModel(inputModel, keyspace)
     val executor = ExecutionContext.global
     val crud = stargate.model.unbatchedCRUD(model, this.session, executor)
     util.await(model.createTables(session, executor)).get
